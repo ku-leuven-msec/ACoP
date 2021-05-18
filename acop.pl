@@ -127,7 +127,7 @@ sbs(P, Executed, B, Exec, ToExec) :-
                   ;(sbs(P, [] , B2, ExecTemp, ToExecTemp), Exec = state(B, ExecTemp, ToExecTemp), ToExec=[])))))).
 
 sbs(P, Executed, (B1,B2), Exec, ToExec) :-
-  nth0(0, Executed, _),
+  \+length(Executed,0),
   sbs(P, Executed, B1, Exec1, _),
   append(Executed, Exec1, ExecutedTotal),
   (accessibility_determined(P) 
@@ -189,3 +189,143 @@ execute_to_execute([First|Rest]) :-
   First,  execute_to_execute(Rest).
 
 execute_to_execute([]).
+
+
+%---------------------------------
+%---------------------------------
+%---argument annotation support---
+%---------------------------------
+%---------------------------------
+
+
+%allow facts - ignore annotated arguments
+term_expansion(allow(Predicate), Out) :-
+  %extract arguments Args
+  compound_name_arguments(Predicate, Name, Args),
+  % ignore annotated arguments for preliminary access control, create PrePredicate
+  ignore_annotated_arguments(Args, PreArgs),
+  compound_name_arguments(PrePredicate, Name, PreArgs),
+  % remove annotations, create PostPredicate
+  remove_annotations(Args, PostArgs),
+  compound_name_arguments(PostPredicate, Name, PostArgs),
+  Out=[pre_allow(PrePredicate),allow(PostPredicate)].
+
+%allow rules - ignore annotated arguments
+term_expansion((allow(Predicate) :- Body), Out) :- 
+  compound_name_arguments(Predicate, Name, Args),
+  ignore_annotated_arguments_and_body(Args, PreArgs, Body, PreBody),
+  compound_name_arguments(PrePredicate, Name, PreArgs),
+  remove_annotations(Args, PostArgs),
+  compound_name_arguments(PostPredicate, Name, PostArgs),
+    Out=[(pre_allow(PrePredicate) :- PreBody) , (allow(PostPredicate) :- Body)].
+
+%deny facts - ignore fact if at least one annotated arguments
+term_expansion((deny(Predicate)), Out) :-
+  compound_name_arguments(Predicate, Name, Args),
+  contains_annotated_argument(Args) 
+    -> (remove_annotations(Args, PostArgs),compound_name_arguments(PostPredicate, Name, PostArgs), Out=[(deny(PostPredicate))])
+    ; (Out=[(pre_deny(Predicate)) , (deny(Predicate))]).
+
+%deny rules - ignore rule if at least one annotated argument
+term_expansion((deny(Predicate) :- Body), Out) :-
+  compound_name_arguments(Predicate, Name, Args),
+  contains_annotated_argument(Args) 
+    -> (remove_annotations(Args, PostArgs),compound_name_arguments(PostPredicate, Name, PostArgs), Out=[(deny(PostPredicate) :- Body)])
+    ; (Out=[(pre_deny(Predicate) :-Body) , (deny(Predicate) :- Body)]).
+
+%--------------------------------
+%---ignore annotated arguments---
+%--------------------------------
+
+ignore_annotated_arguments([H], [NH]) :- 
+  compound(H) 
+    -> (compound_name_arguments(H, '?', _) -> NH=_; (NH=H))
+    ; NH=H.
+
+ignore_annotated_arguments([H|T], [NH|NT]) :- 
+  \+length(T,0),
+  (compound(H) 
+    -> (compound_name_arguments(H, '?', _) -> NH=_; (NH=H))
+    ; NH=H ),
+  ignore_annotated_arguments(T, NT).
+
+%-----------------------------------------
+%---ignore annotated arguments and body---
+%-----------------------------------------
+
+ignore_annotated_arguments_and_body([H], [NH], Body, NewBody) :- 
+  compound(H) 
+    -> (compound_name_arguments(H, '?', A) 
+          -> (NH=_, ignore_arguments_in_body(A, Body, NewBody, _))
+          ; (NH=H, NewBody=Body)) 
+    ; (NH=H, NewBody=Body).
+
+ignore_annotated_arguments_and_body([H|T], [NH|NT], Body, NewBody) :- 
+  \+length(T,0),
+  (compound(H) 
+    -> (compound_name_arguments(H, '?', A) 
+            -> (NH=_, ignore_arguments_in_body(A, Body, TempBody, _))
+            ; (NH=H, TempBody=Body)) 
+    ; (NH=H, TempBody=Body)),
+  ignore_annotated_arguments_and_body(T, NT, TempBody, NewBody).
+
+%------------------------------
+%---ignore arguments in body---
+%------------------------------
+
+ignore_arguments_in_body([], Body, Body, _).
+ignore_arguments_in_body([Arg], Body, NewBody, NewArgsToIgnore) :- 
+  \+compound_term(Body),
+  (compound(Body) 
+    ->  (compound_name_arguments(Body, _ , Args),
+        (member(Arg, Args) 
+          -> (NewBody = true, delete(Args, Arg, NewArgsToIgnore)) 
+          ; ( NewBody = Body, NewArgsToIgnore=[])))
+    ;(( NewBody = Body, NewArgsToIgnore=[]))).
+
+ignore_arguments_in_body([Arg|ArgTail], Body, NewBody, NewArgsToIgnore) :- 
+  \+length(ArgTail, 0),
+  \+compound_term(Body),
+  (compound(Body) 
+    -> (compound_name_arguments(Body, _ , Args),(member(Arg, Args) 
+          -> ( TempBody = true, delete(Args, Arg, TempArgsToIgnore)) 
+          ; ( TempBody = Body, TempArgsToIgnore=[])))
+    ;(TempBody = Body, TempArgsToIgnore=[])),
+  ignore_arguments_in_body(ArgTail, TempBody, NewBody, TempArgsToIgnore2),
+  append(TempArgsToIgnore, TempArgsToIgnore2, NewArgsToIgnore).
+
+ignore_arguments_in_body(Args, (Body1, Body2), ((NewBody1), (NewBody2)), _) :- 
+  ignore_arguments_in_body(Args, Body1, NewBody1, NewArgsToIgnore1),
+  ignore_arguments_in_body(Args, Body2, TempBody2, _),
+  ignore_arguments_in_body(NewArgsToIgnore1, TempBody2, NewBody2, _). 
+
+ignore_arguments_in_body(Args, (Body1; Body2), (NewBody1;NewBody2), _) :- 
+  ignore_arguments_in_body(Args, Body1, NewBody1, _),
+  ignore_arguments_in_body(Args, Body2, NewBody2, _). 
+
+%------------------------
+%---remove annotations---
+%------------------------
+
+remove_annotations([H], [NH]) :-  
+  compound(H) 
+    ->  (compound_name_arguments(H, '?', [Arg]) 
+          -> NH=Arg
+          ;(NH=H))
+    ;(NH=H).
+
+remove_annotations([H|T], [NH|NT]) :- 
+  (compound(H) 
+    ->  (compound_name_arguments(H, '?', [Arg]) 
+          -> NH=Arg
+          ;(NH=H))
+    ;   (NH=H)),
+  remove_annotations(T, NT).
+
+%---------------------------------
+%---contains annotated argument---
+%---------------------------------
+
+contains_annotated_argument([A|T]) :-
+  (compound(A), compound_name_arguments(A, '?', _))
+  ; contains_annotated_argument(T).
