@@ -1,16 +1,26 @@
-:- module(access_control, [use_access_control/3, access/1]).
+:- module(acop, [use_access_control/4, access/1]).
+
+:- dynamic allow/1.
+:- dynamic deny/1.
 
 :- multifile allow/1.
 :- multifile deny/1.
+:- multifile pre_allow/1.
+:- multifile pre_deny/1.
 
-use_access_control(Default_Access, Body_Resolution, Allowed_Predicates) :- 
-  create_prolog_flag(default_access, Default_Access,  [access(read_only), type(boolean), keep(true)]),
-  create_prolog_flag(body_resolution, Body_Resolution,  [access(read_only), type(boolean), keep(true)]),
+use_access_control(Default_Access, Body_Resolution, Custom_Pre_Access ,Allowed_Predicates) :-
+%  create_prolog_flag(default_access, Default_Access,  [access(read_only), type(boolean), keep(true)]),
+%  create_prolog_flag(body_resolution, Body_Resolution,  [access(read_only), type(boolean), keep(true)]),
+%  create_prolog_flag(custom_pre_access, Custom_Pre_Access,  [access(read_only), type(boolean), keep(true)]),
+%no restrictions for flags for testing purposes
+  create_prolog_flag(default_access, Default_Access,  []),
+  create_prolog_flag(body_resolution, Body_Resolution,  []),
+  create_prolog_flag(custom_pre_access, Custom_Pre_Access,  []),
   asserta(allowed_predicates(Allowed_Predicates)),
-  asserta(user:expand_query(Query,Out, Arg, Arg) :- (allowed_predicate(Query), Out=Query);(Out=(access_control:handle(Query)), debug(debug_access_control, 'expand_query query: ~w- args: ~w ', [Query,Arg]))).
+  asserta(user:expand_query(Query,Out, Arg, Arg) :- (allowed_predicate(Query), Out=Query);(Out=(acop:handle(Query)))).
 
-access(X) :- default_access, must_be(nonvar, X), (allow(X); \+deny(X)).
-access(X) :- \+default_access, must_be(nonvar, X), (allow(X), \+deny(X)).
+access(X) :-  default_access, must_be(nonvar, X), (allow(X); \+deny(X)).
+access(X) :-  \+default_access, must_be(nonvar, X), (allow(X), \+deny(X)).
 
 %---------------
 %---utilities---
@@ -25,6 +35,8 @@ compound_term(T) :- current_predicate(';',T).
 
 default_access :- current_prolog_flag(default_access, true).
 body_resolution :- current_prolog_flag(body_resolution, true).
+custom_pre_access :- current_prolog_flag(custom_pre_access, true).
+
 
 %------------------------
 %---access definitions----
@@ -32,11 +44,11 @@ body_resolution :- current_prolog_flag(body_resolution, true).
 access_rule_exists(P) :- (allow_exists(P);deny_exists(P)),!.
 allow_exists(P) :-   
     clause(allow(TP),_), 
-    unifiable(TP,P,_). 
+    unifiable(TP,P,_).
 
 deny_exists(P) :-  
     clause(deny(TP),_), 
-    unifiable(TP,P,_). 
+    unifiable(TP,P,_).
 
 %---------------
 accessibility_determined(P) :- 
@@ -53,7 +65,7 @@ all_deny_rules_determined(P) :-
     forall(clause(deny(TP),B),(subsumes_chk(TP,P), term_variables(TP, Vars), forall(member(V, Vars),\+contains_var(V,B)))).
 
 %---------------
-access_control(P) :- default_access, (allow_check(P); \+deny_check(P)),!.
+access_control(P) :- default_access,(allow_check(P); \+deny_check(P)),!.
 access_control(P) :- \+default_access, allow_check(P),\+deny_check(P),!.
 
 allow_check(P) :-     
@@ -67,8 +79,11 @@ deny_check(P) :-
     deny(TP).
 
 %---------------
-pre_access_control(P) :- default_access, (pre_allow_check(P); \+pre_deny_check(P)),!.
-pre_access_control(P) :- \+default_access, pre_allow_check(P),\+pre_deny_check(P),!.
+pre_access_control(P) :- custom_pre_access, custom_pre_access_control(P).
+pre_access_control(P) :- \+custom_pre_access, access_control(P).
+
+custom_pre_access_control(P) :- default_access, (pre_allow_check(P); \+pre_deny_check(P)),!.
+custom_pre_access_control(P) :- \+default_access, pre_allow_check(P),\+pre_deny_check(P),!.
 
 pre_allow_check(P) :-     
     copy_term(P,TP),
@@ -83,19 +98,19 @@ pre_deny_check(P) :-
 %--------------------
 %---term breakdown---
 %--------------------
-handle(T) :- \+compound_term(T),handle_predicate(T).
-handle((T1,T2)) :- handle(T1), handle(T2), \+deny_check(T1).
-handle((T1;T2)) :- handle(T1); handle(T2).
+handle(T) :- \+compound_term(T), handle_predicate(T).
+handle((T1,T2)) :-  handle(T1), handle(T2), \+deny_check(T1).
+handle((T1;T2)) :-  handle(T1); handle(T2).
 
 %------------------------
 %---predicate handling---
 %------------------------
 handle_predicate(P) :- public_predicate(P) -> handle_public_predicate(P); handle_access(P).
 
-handle_public_predicate(P) :- 
-  clause(P,Body), 
-  (access_rule_exists(P) 
-    -> (accessibility_determined(P) 
+handle_public_predicate(P) :-
+  clause(P,Body),
+  (access_rule_exists(P)
+    -> (accessibility_determined(P)
           -> handle_access(P, Body)
           ; process_body_sbs(P,Body))
     ; handle_body_resolution(P, Body)).
